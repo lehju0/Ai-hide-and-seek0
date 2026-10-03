@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Real-time Q-Learning AI 3D Simulation</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #0b0f19;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            color: #f1f5f9;
+        }
+        #webgl-container {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+        /* UI Overlay */
+        .ui-panel {
+            position: absolute;
+            top: 12px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: calc(100% - 24px);
+            max-width: 440px;
+            background: rgba(15, 23, 42, 0.85);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 12px 16px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+            pointer-events: none;
+            z-index: 10;
+        }
+        .ui-title {
+            font-size: 1rem;
+            font-weight: 700;
+            color: #38bdf8;
+            text-align: center;
+            margin-bottom: 8px;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 6px;
+            background: rgba(30, 41, 59, 0.6);
+            padding: 8px;
+            border-radius: 10px;
+            font-size: 0.75rem;
+            text-align: center;
+        }
+        .stat-box {
+            display: flex;
+            flex-direction: column;
+        }
+        .stat-label { color: #94a3b8; font-size: 0.65rem; }
+        .stat-value { font-weight: 700; color: #f8fafc; font-size: 0.85rem; margin-top: 2px; }
+        
+        .ui-log {
+            margin-top: 8px;
+            background: rgba(15, 23, 42, 0.6);
+            border-radius: 8px;
+            padding: 6px 10px;
+            font-size: 0.75rem;
+            color: #e2e8f0;
+            text-align: center;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        /* Speed & Controls */
+        .ui-footer {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            z-index: 10;
+            width: calc(100% - 32px);
+            max-width: 360px;
+        }
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            width: 100%;
+        }
+        .btn {
+            flex: 1;
+            background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%);
+            color: #ffffff;
+            border: none;
+            padding: 12px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            border-radius: 20px;
+            box-shadow: 0 4px 16px rgba(2, 132, 199, 0.4);
+            cursor: pointer;
+            outline: none;
+            transition: transform 0.15s ease;
+        }
+        .btn:active { transform: scale(0.95); }
+        .btn-reset { background: rgba(51, 65, 85, 0.8); color: #cbd5e1; }
+        .speed-control {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(15, 23, 42, 0.8);
+            padding: 6px 16px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            color: #94a3b8;
+            width: 100%;
+            justify-content: center;
+        }
+        .speed-control input { width: 100px; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+
+    <div class="ui-panel">
+        <div class="ui-title">🧠 실시간 강화학습(Q-Learning) AI</div>
+        <div class="stats-grid">
+            <div class="stat-box">
+                <span class="stat-label">학습 회차 (Episode)</span>
+                <span id="stat-episode" class="stat-value">0</span>
+            </div>
+            <div class="stat-box">
+                <span class="stat-label">탐험율 (Epsilon)</span>
+                <span id="stat-epsilon" class="stat-value">100%</span>
+            </div>
+            <div class="stat-box">
+                <span class="stat-label">평균 이동 횟수</span>
+                <span id="stat-steps" class="stat-value">0</span>
+            </div>
+        </div>
+        <div id="log-text" class="ui-log">AI가 완전히 새로운 무작위 상태에서 학습을 시작합니다.</div>
+    </div>
+
+    <div id="webgl-container"></div>
+
+    <div class="ui-footer">
+        <div class="speed-control">
+            <span>학습 속도:</span>
+            <input type="range" id="speed-slider" min="1" max="50" value="5">
+            <span id="speed-val">5x</span>
+        </div>
+        <div class="btn-group">
+            <button id="btn-toggle" class="btn" onclick="toggleTraining()">학습 시작</button>
+            <button class="btn btn-reset" onclick="resetQTable()">지능 초기화</button>
+        </div>
+    </div>
+
+    <script>
+        // --- 1. 강화학습(Q-Learning) 환경 설정 ---
+        const GRID_SIZE = 6;
+        const TILE_SIZE = 1.2;
+        const OFFSET = (GRID_SIZE * TILE_SIZE) / 2 - TILE_SIZE / 2;
+
+        // Q-Learning 하이퍼파라미터
+        const ALPHA = 0.2;     // 학습률 (Learning Rate)
+        const GAMMA = 0.9;     // 할인율 (Discount Factor)
+        let epsilon = 1.0;     // 무작위 탐험 확률 (1.0 = 100% 무작위, 점점 감소함)
+        const EPSILON_DECAY = 0.995;
+        const MIN_EPSILON = 0.05;
+
+        // Q-Table: Q[state_key][action]
+        let Q = {};
+
+        // 이동 방향: 0: 상, 1: 하, 2: 좌, 3: 우
+        const ACTIONS = [
+            { dx: 0, dz: -1 },
+            { dx: 0, dz: 1 },
+            { dx: -1, dz: 0 },
+            { dx: 1, dz: 0 }
+        ];
+
+        // 상태값
+        let seeker = { x: 5, z: 5 };
+        let hider = { x: 0, z: 0 };
+        let box = { x: 2, z: 2 }; // 장애물
+
+        let episode = 0;
+        let currentStep = 0;
+        let totalStepsHistory = [];
+        let isTraining = false;
+        let speed = 5;
+
+        // 3D 메쉬
+        let scene, camera, renderer, controls;
+        let seekerMesh, hiderMesh, boxMesh;
+
+        // --- 2. Q-Learning 핵심 로직 ---
+        function getStateKey(sx, sz) {
+            return `${sx},${sz}`;
+        }
+
+        function getQValues(stateKey) {
+            if (!Q[stateKey]) {
+                Q[stateKey] = [0, 0, 0, 0]; // 4가지 행동에 대한 초기 보상값 0
+            }
+            return Q[stateKey];
+        }
+
+        function chooseAction(stateKey) {
+            // Epsilon-Greedy 전략: 확률적으로 무작위 행동(탐험) 또는 최선의 행동(활용) 선택
+            if (Math.random() < epsilon) {
+                return Math.floor(Math.random() * 4); // 무작위 탐험
+            } else {
+                const qValues = getQValues(stateKey);
+                let maxVal = Math.max(...qValues);
+                return qValues.indexOf(maxVal); // 가장 점수가 높은 행동 선택
+            }
+        }
+
+        function stepAI() {
+            const currentStateKey = getStateKey(seeker.x, seeker.z);
+            const actionIdx = chooseAction(currentStateKey);
+            const action = ACTIONS[actionIdx];
+
+            // 다음 위치 계산
+            let nextX = seeker.x + action.dx;
+            let nextZ = seeker.z + action.dz;
+
+            // 보상(Reward) 설계
+            let reward = -1; // 움직일 때마다 기본 마이너스 보상 (최단거리를 학습하게 함)
+            let isDone = false;
+
+            // 벽에 부딪힘
+            if (nextX < 0 || nextX >= GRID_SIZE || nextZ < 0 || nextZ >= GRID_SIZE) {
+                reward = -5;
+                nextX = seeker.x;
+                nextZ = seeker.z;
+            } 
+            // 장애물(상자)에 부딪힘
+            else if (nextX === box.x && nextZ === box.z) {
+                reward = -5;
+                nextX = seeker.x;
+                nextZ = seeker.z;
+            }
+            // 도망자(목표) 잡기 성공!
+            else if (nextX === hider.x && nextZ === hider.z) {
+                reward = 100; // 큰 보상 부여
+                isDone = true;
+            }
+
+            // Q-Table 업데이트 (Q-Learning 공식)
+            const nextStateKey = getStateKey(nextX, nextZ);
+            const currentQ = getQValues(currentStateKey)[actionIdx];
+            const maxNextQ = Math.max(...getQValues(nextStateKey));
+
+            // Q(s,a) = Q(s,a) + alpha * (reward + gamma * max(Q(s',a')) - Q(s,a))
+            Q[currentStateKey][actionIdx] = currentQ + ALPHA * (reward + GAMMA * maxNextQ - currentQ);
+
+            // 상태 업데이트
+            seeker.x = nextX;
+            seeker.z = nextZ;
+            currentStep++;
+
+            update3DPositions();
+
+            // 에피소드 종료 처리
+            if (isDone || currentStep > 100) { // 100번 넘게 헤매면 리셋
+                episode++;
+                totalStepsHistory.push(currentStep);
+                if (totalStepsHistory.length > 20) totalStepsHistory.shift();
+
+                // Epsilon 감소 (점점 탐험을 줄이고 학습된 지식을 사용함)
+                epsilon = Math.max(MIN_EPSILON, epsilon * EPSILON_DECAY);
+
+                // UI 업데이트
+                document.getElementById('stat-episode').innerText = episode;
+                document.getElementById('stat-epsilon').innerText = Math.round(epsilon * 100) + '%';
+                const avgSteps = Math.round(totalStepsHistory.reduce((a,b)=>a+b, 0) / totalStepsHistory.length);
+                document.getElementById('stat-steps').innerText = avgSteps;
+
+                if (isDone) {
+                    logMessage(`🎉 [에피소드 ${episode}] ${currentStep}번 만에 붙잡았습니다! Q-Table 학습 완료.`);
+                } else {
+                    logMessage(`💥 [에피소드 ${episode}] 길을 잃어 리셋되었습니다. 계속 학습합니다.`);
+                }
+
+                // 위치 리셋
+                seeker = { x: 5, z: 5 };
+                currentStep = 0;
+            } else {
+                if (epsilon > 0.5) {
+                    logMessage(`🎲 무작위 탐험 중... (이동: ${currentStep}회)`);
+                } else {
+                    logMessage(`🧠 학습된 Q-Table을 바탕으로 이동 중! (이동: ${currentStep}회)`);
+                }
+            }
+        }
+
+        // --- 3. Three.js 3D 환경 구현 ---
+        function init3D() {
+            const container = document.getElementById('webgl-container');
+
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x0b0f19);
+
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 10, 10);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.shadowMap.enabled = true;
+            container.appendChild(renderer.domElement);
+
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+            scene.add(ambientLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(5, 12, 5);
+            dirLight.castShadow = true;
+            scene.add(dirLight);
+
+            // 바닥 및 격자
+            const boardSize = GRID_SIZE * TILE_SIZE;
+            const floorGeo = new THREE.BoxGeometry(boardSize, 0.2, boardSize);
+            const floorMat = new THREE.MeshStandardMaterial({ color: 0x1e293b });
+            const floor = new THREE.Mesh(floorGeo, floorMat);
+            floor.position.y = -0.1;
+            floor.receiveShadow = true;
+            scene.add(floor);
+
+            const gridHelper = new THREE.GridHelper(boardSize, GRID_SIZE, 0x38bdf8, 0x334155);
+            gridHelper.position.y = 0.01;
+            scene.add(gridHelper);
+
+            // 오브젝트 생성
+            // 1. 술래 (학습하는 AI - 파란색)
+            const seekerGeo = new THREE.SphereGeometry(0.35, 32, 32);
+            const seekerMat = new THREE.MeshStandardMaterial({ color: 0x3b82f6 });
+            seekerMesh = new THREE.Mesh(seekerGeo, seekerMat);
+            seekerMesh.castShadow = true;
+            scene.add(seekerMesh);
+
+            // 2. 도망자 (목표 - 빨간색)
+            const hiderGeo = new THREE.SphereGeometry(0.35, 32, 32);
+            const hiderMat = new THREE.MeshStandardMaterial({ color: 0xf43f5e });
+            hiderMesh = new THREE.Mesh(hiderGeo, hiderMat);
+            hiderMesh.castShadow = true;
+            scene.add(hiderMesh);
+
+            // 3. 장애물 상자 (주황색)
+            const boxGeo = new THREE.BoxGeometry(0.8, 0.8, 0.8);
+            const boxMat = new THREE.MeshStandardMaterial({ color: 0xd97706 });
+            boxMesh = new THREE.Mesh(boxGeo, boxMat);
+            boxMesh.castShadow = true;
+            scene.add(boxMesh);
+
+            update3DPositions();
+            
+            // 슬라이더 조절
+            document.getElementById('speed-slider').addEventListener('input', (e) => {
+                speed = parseInt(e.target.value);
+                document.getElementById('speed-val').innerText = speed + 'x';
+            });
+
+            window.addEventListener('resize', onWindowResize);
+            animate();
+        }
+
+        function gridToWorld(gx, gz) {
+            return {
+                x: (gx * TILE_SIZE) - OFFSET,
+                z: (gz * TILE_SIZE) - OFFSET
+            };
+        }
+
+        function update3DPositions() {
+            const sPos = gridToWorld(seeker.x, seeker.z);
+            const hPos = gridToWorld(hider.x, hider.z);
+            const bPos = gridToWorld(box.x, box.z);
+
+            seekerMesh.position.set(sPos.x, 0.35, sPos.z);
+            hiderMesh.position.set(hPos.x, 0.35, hPos.z);
+            boxMesh.position.set(bPos.x, 0.4, bPos.z);
+        }
+
+        function logMessage(msg) {
+            document.getElementById('log-text').innerText = msg;
+        }
+
+        // 루프 제어
+        let lastStepTime = 0;
+        function animate(timestamp) {
+            requestAnimationFrame(animate);
+
+            if (isTraining && timestamp - lastStepTime > (200 / speed)) {
+                stepAI();
+                lastStepTime = timestamp;
+            }
+
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        function toggleTraining() {
+            isTraining = !isTraining;
+            const btn = document.getElementById('btn-toggle');
+            if (isTraining) {
+                btn.innerText = "학습 일시정지";
+                btn.style.background = "linear-gradient(135deg, #e11d48 0%, #be123c 100%)";
+            } else {
+                btn.innerText = "학습 시작";
+                btn.style.background = "linear-gradient(135deg, #0284c7 0%, #0369a1 100%)";
+            }
+        }
+
+        function resetQTable() {
+            Q = {};
+            epsilon = 1.0;
+            episode = 0;
+            currentStep = 0;
+            totalStepsHistory = [];
+            seeker = { x: 5, z: 5 };
+            
+            document.getElementById('stat-episode').innerText = '0';
+            document.getElementById('stat-epsilon').innerText = '100%';
+            document.getElementById('stat-steps').innerText = '0';
+            
+            update3DPositions();
+            logMessage("AI의 모든 기억(Q-Table)이 초기화되었습니다. 바보 상태로 돌아갑니다.");
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        window.onload = init3D;
+    </script>
+</body>
+</html>
